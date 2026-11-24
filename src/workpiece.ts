@@ -279,6 +279,7 @@ export class WorkpieceSystem extends createSystem({
     if (!presser) return;
     this.locked = !this.locked;
     this.trackerSide = undefined;
+    if (!this.locked) this.levelWorkpiece(); // déverrouillé : bloc remis droit, pour que les outils d'alignement marchent
     if (this.locked && this.trackingEnabled) this.attachTracker(presser.side === 'right' ? 'left' : 'right');
     this.refreshVisibility();
   }
@@ -573,6 +574,18 @@ export class WorkpieceSystem extends createSystem({
       world.premultiply(new Matrix4().copy(parent.matrixWorld).invert());
     }
     world.decompose(this.workpiece.position, this.workpiece.quaternion, this.tmp);
+    // Le socle est posé sur une table : on ne garde que la rotation autour de la verticale,
+    // pour ne pas pencher le bloc à cause des petites inclinaisons mesurées sur la manette
+    this.levelWorkpiece();
+  }
+
+  /** Remet le bloc droit : on ne garde que sa rotation autour de l'axe vertical. */
+  private levelWorkpiece(): void {
+    if (!this.workpiece) return;
+    // Axe « largeur » du bloc après rotation, projeté à l'horizontale → angle autour de la verticale
+    const xAxis = new Vector3(1, 0, 0).applyQuaternion(this.workpiece.quaternion);
+    const yaw = Math.atan2(-xAxis.z, xAxis.x);
+    this.workpiece.rotation.set(0, yaw, 0);
   }
 
   // ---------- Panneau de réglages ----------
