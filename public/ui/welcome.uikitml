@@ -6,7 +6,7 @@
 <style>
   .panel-root {
     flex-direction: column;
-    width: 420px;
+    width: 560px;
   }
 
   .panel-content {
@@ -60,10 +60,14 @@
 </style>
 <Panel class="panel-root">
   <div class="panel-content">
-    <div class="eyebrow">IMMERSIVE WEB SDK</div>
-    <div class="heading">Hello, Immersive Web!</div>
-    <div class="body">Try each station around you,</div>
-    <div class="body">then make this scene your own.</div>
+    <div class="eyebrow">PROTOTYPE SCULPTURE AR</div>
+    <div id="status" class="heading">Alignement</div>
+    <div class="body">Gachette maintenue : glisser le bloc sur la table</div>
+    <div class="body">Joystick gauche / droite : tourner</div>
+    <div class="body">Joystick haut / bas : hauteur (verrouille : couche)</div>
+    <div class="body">A ou X : affichage du modele</div>
+    <div class="body">B ou Y : verrouiller / deverrouiller</div>
+    <div class="body">Poignee : maquette tournante (verrouille)</div>
   </div>
   <Button id="xr-button" class="button">
     <ButtonIcon>
