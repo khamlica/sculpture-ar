@@ -88,6 +88,9 @@ type Gamepad = NonNullable<WorkpieceSystem['input']['xr']['gamepads']['right']>;
  *   A ou X = changer l'affichage : plein / transparent / fil de fer / matière à retirer / révélation
  *   B ou Y = verrouiller / déverrouiller
  *   poignée = afficher / cacher la maquette tournante (verrouillé)
+ *
+ * Support suivi (activable dans le panneau de réglages) : au verrouillage, la manette qui N'A PAS appuyé
+ * sur B/Y (scotchée sur la planche) devient le traceur, et le bloc suit ses mouvements.
  *             joystick gauche/droite la fait tourner à la main, sinon elle tourne seule
  */
 export class WorkpieceSystem extends createSystem({
@@ -134,6 +137,13 @@ export class WorkpieceSystem extends createSystem({
   private revealCopy: Object3D | undefined;
   private greyMaterial = new MeshStandardMaterial({ color: 0x8a8a8a });
 
+  /** Support suivi : une manette scotchée sur la planche sert de traceur pendant la phase verrouillée. */
+  private trackingEnabled = false;
+  private trackerSide: Side | undefined;
+  /** Position du bloc par rapport à la manette traceur, mémorisée au verrouillage. */
+  private trackerOffset = new Matrix4();
+  private trackerLost = false;
+
   /** Ligne d'état du panneau d'aide. */
   private statusText: UIKit.Text | undefined;
 
@@ -164,6 +174,7 @@ export class WorkpieceSystem extends createSystem({
 
     // 3. Verrouillé : rien ne bouge. Seul le choix de la couche reste possible.
     if (this.locked) {
+      this.followTracker();
       this.handleLayer(pads);
       this.handleMaquette(pads, delta);
       return;
@@ -264,8 +275,11 @@ export class WorkpieceSystem extends createSystem({
 
   /** B (droite) ou Y (gauche) : verrouille ou déverrouille. */
   private handleLock(pads: { side: Side; pad: Gamepad }[]): void {
-    if (!pads.some(({ side, pad }) => pad.getButtonDown(LOCK_BUTTON[side]))) return;
+    const presser = pads.find(({ side, pad }) => pad.getButtonDown(LOCK_BUTTON[side]));
+    if (!presser) return;
     this.locked = !this.locked;
+    this.trackerSide = undefined;
+    if (this.locked && this.trackingEnabled) this.attachTracker(presser.side === 'right' ? 'left' : 'right');
     this.refreshVisibility();
   }
 
@@ -366,6 +380,10 @@ export class WorkpieceSystem extends createSystem({
     let text = `${this.locked ? 'VERROUILLE' : 'ALIGNEMENT'} | ${MODE_LABELS[mode]}`;
     if (mode === 'removal' && this.removalLayers.length > 0) {
       text += ` | couche ${this.currentLayer + 1}/${this.removalLayers.length}`;
+    }
+    if (this.locked && this.trackingEnabled) {
+      if (!this.trackerSide) text += ' | suivi : manette introuvable';
+      else text += ` | suivi manette ${this.trackerSide === 'left' ? 'gauche' : 'droite'}${this.trackerLost ? ' (perdue)' : ''}`;
     }
     this.statusText?.setProperties({ text });
   }
@@ -508,6 +526,55 @@ export class WorkpieceSystem extends createSystem({
     this.revealCopy.scale.copy(this.model.scale);
   }
 
+  // ---------- Support suivi par une manette ----------
+
+  /** Une manette (et non une main suivie) : elle a un joystick. */
+  private isController(pad: Gamepad | undefined): pad is Gamepad {
+    return !!pad && pad.getAxesValues(THUMBSTICK) !== undefined;
+  }
+
+  /** La pose (position + orientation) de la manette dans la pièce. */
+  private trackerMatrix(side: Side): Matrix4 | undefined {
+    const grip = this.world.playerSpaceEntities.gripSpaces[side].object3D;
+    if (!grip) return undefined;
+    grip.updateWorldMatrix(true, false);
+    return grip.matrixWorld;
+  }
+
+  /** Au verrouillage : mémorise où est le bloc par rapport à la manette scotchée. */
+  private attachTracker(side: Side): void {
+    if (!this.workpiece || !this.isController(this.input.xr.gamepads[side])) return;
+    const tracker = this.trackerMatrix(side);
+    if (!tracker) return;
+    this.workpiece.updateWorldMatrix(true, false);
+    this.trackerOffset.copy(tracker).invert().multiply(this.workpiece.matrixWorld);
+    this.trackerSide = side;
+    this.trackerLost = false;
+  }
+
+  /** Verrouillé avec suivi : le bloc reprend chaque image sa place par rapport à la manette. */
+  private followTracker(): void {
+    if (!this.trackerSide || !this.workpiece) return;
+    const pad = this.input.xr.gamepads[this.trackerSide];
+    const tracker = this.isController(pad) ? this.trackerMatrix(this.trackerSide) : undefined;
+
+    // Manette perdue ou remplacée par la main : on fige le bloc plutôt que de suivre la main
+    const lost = !tracker;
+    if (lost !== this.trackerLost) {
+      this.trackerLost = lost;
+      this.updateStatus();
+    }
+    if (!tracker) return;
+
+    const world = new Matrix4().multiplyMatrices(tracker, this.trackerOffset);
+    const parent = this.workpiece.parent;
+    if (parent) {
+      parent.updateWorldMatrix(true, false);
+      world.premultiply(new Matrix4().copy(parent.matrixWorld).invert());
+    }
+    world.decompose(this.workpiece.position, this.workpiece.quaternion, this.tmp);
+  }
+
   // ---------- Panneau de réglages ----------
 
   /** Relie les boutons du panneau de réglages aux actions. */
@@ -525,6 +592,11 @@ export class WorkpieceSystem extends createSystem({
     bind('d-plus', () => this.changeSize('z', SIZE_STEP));
     bind('o-minus', () => this.changeOpacity(-OPACITY_STEP));
     bind('o-plus', () => this.changeOpacity(OPACITY_STEP));
+    bind('t-toggle', () => {
+      this.trackingEnabled = !this.trackingEnabled;
+      this.updateSettingsLabels();
+      this.updateStatus();
+    });
     this.updateSettingsLabels();
   }
 
@@ -565,6 +637,7 @@ export class WorkpieceSystem extends createSystem({
     set('h-value', cm(this.blockSize.y));
     set('d-value', cm(this.blockSize.z));
     set('o-value', `${Math.round(this.transparentMaterial.opacity * 100)} %`);
+    set('t-value', this.trackingEnabled ? 'oui' : 'non');
   }
 
   // ---------- Objets d'aide ----------

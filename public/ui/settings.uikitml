@@ -52,6 +52,11 @@
     width: 64px;
     justify-content: center;
   }
+
+  .wide {
+    width: 150px;
+    justify-content: center;
+  }
 </style>
 <Panel class="panel-root">
   <div class="panel-content">
@@ -80,6 +85,12 @@
       <div id="o-value" class="value">40 %</div>
       <Button id="o-plus" class="step"><ButtonLabel>+</ButtonLabel></Button>
     </div>
+    <div class="row">
+      <div class="label">Support suivi</div>
+      <div id="t-value" class="value">non</div>
+      <Button id="t-toggle" class="wide"><ButtonLabel>changer</ButtonLabel></Button>
+    </div>
     <div class="hint">Taille : seulement deverrouille. Opacite : mode transparent.</div>
+    <div class="hint">Support suivi : verrouiller avec la manette en main, l'autre (scotchee) est suivie.</div>
   </div>
 </Panel>
