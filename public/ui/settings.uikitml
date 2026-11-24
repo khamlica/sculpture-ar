@@ -62,6 +62,11 @@
   <div class="panel-content">
     <div class="eyebrow">REGLAGES</div>
     <div class="row">
+      <div class="label">Modele</div>
+      <div id="m-value" class="value">canard</div>
+      <Button id="m-next" class="wide"><ButtonLabel>changer</ButtonLabel></Button>
+    </div>
+    <div class="row">
       <div class="label">Largeur</div>
       <Button id="w-minus" class="step"><ButtonLabel>-</ButtonLabel></Button>
       <div id="w-value" class="value">7.0 cm</div>
@@ -90,7 +95,7 @@
       <div id="t-value" class="value">non</div>
       <Button id="t-toggle" class="wide"><ButtonLabel>changer</ButtonLabel></Button>
     </div>
-    <div class="hint">Taille : seulement deverrouille. Opacite : mode transparent.</div>
+    <div class="hint">Modele et taille : seulement deverrouille. Opacite : mode transparent.</div>
     <div class="hint">Support suivi : verrouiller avec la manette en main, l'autre (scotchee) est suivie.</div>
   </div>
 </Panel>

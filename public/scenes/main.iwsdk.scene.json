@@ -56,6 +56,33 @@
             "asset": "duck",
             "castShadow": true
           }
+        },
+        {
+          "id": "avocado",
+          "name": "Avocado",
+          "content": {
+            "type": "asset",
+            "asset": "avocado",
+            "castShadow": true
+          }
+        },
+        {
+          "id": "fish",
+          "name": "Fish",
+          "content": {
+            "type": "asset",
+            "asset": "fish",
+            "castShadow": true
+          }
+        },
+        {
+          "id": "suzanne",
+          "name": "Suzanne",
+          "content": {
+            "type": "asset",
+            "asset": "suzanne",
+            "castShadow": true
+          }
         }
       ]
     },

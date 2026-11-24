@@ -56,11 +56,14 @@ export default defineAssets({
     name: 'Robot',
     priority: 'lazy',
   },
-    duck: {
+  duck: {
     url: publicAssetUrl('models/duck.glb'),
     type: AssetType.GLTF,
     name: 'Duck',
   },
+  avocado: { url: publicAssetUrl('models/avocado.glb'), type: AssetType.GLTF, name: 'Avocado' },
+  fish: { url: publicAssetUrl('models/fish.glb'), type: AssetType.GLTF, name: 'Fish' },
+  suzanne: { url: publicAssetUrl('models/suzanne.glb'), type: AssetType.GLTF, name: 'Suzanne' },
   'welcome-panel': uikitml('welcome.uikitml', 'Welcome Panel'),
   'settings-panel': uikitml('settings.uikitml', 'Settings Panel'),
   'label-grab': uikitml('label-grab.uikitml', 'Grab Label'),

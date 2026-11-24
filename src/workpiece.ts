@@ -53,6 +53,17 @@ const PRACTICE_CUBE = location.hostname === 'localhost';
 
 // ========================================================
 
+/**
+ * Modèles disponibles (nœuds enfants de « workpiece » dans la scène).
+ * closed = surface fermée : un seul rayon suffit pour le test dedans/dehors ; sinon vote à trois rayons.
+ */
+const MODELS = [
+  { id: 'duck', label: 'canard', closed: true },
+  { id: 'avocado', label: 'avocat', closed: false },
+  { id: 'fish', label: 'poisson', closed: true },
+  { id: 'suzanne', label: 'Suzanne', closed: false },
+];
+
 type DisplayMode = 'solid' | 'transparent' | 'wireframe' | 'removal' | 'reveal';
 const DISPLAY_MODES: DisplayMode[] = ['solid', 'transparent', 'wireframe', 'removal', 'reveal'];
 
@@ -135,6 +146,11 @@ export class WorkpieceSystem extends createSystem({
    * Là où il reste de la pâte devant le canard : gris. Là où la pâte a été enlevée : couleur.
    */
   private revealCopy: Object3D | undefined;
+  private revealEntity: Entity | undefined;
+
+  /** Modèle affiché, et modèle demandé (on attend qu'il soit chargé pour basculer). */
+  private modelIndex = 0;
+  private pendingModel: number | undefined;
   private greyMaterial = new MeshStandardMaterial({ color: 0x8a8a8a });
 
   /** Support suivi : une manette scotchée sur la planche sert de traceur pendant la phase verrouillée. */
@@ -160,9 +176,14 @@ export class WorkpieceSystem extends createSystem({
   // ---------- À chaque image : le chef d'orchestre ----------
 
   update(delta: number): void {
-    // 1. Tant que la pièce de travail n'est pas prête, on la prépare
+    // 1. Seul le modèle choisi est affiché ; tant que la pièce n'est pas prête, on la prépare
+    this.hideInactiveModels();
     if (!this.workpiece) {
       this.setupWorkpiece();
+      return;
+    }
+    if (this.pendingModel !== undefined) {
+      this.trySwitchModel();
       return;
     }
     const pads = this.getPads();
@@ -201,7 +222,7 @@ export class WorkpieceSystem extends createSystem({
   /** Une seule fois, dès que le modèle 3D est chargé : bloc virtuel + figurine ajustée dedans. */
   private setupWorkpiece(): void {
     const workpiece = this.world.getSceneObject('workpiece');
-    const model = this.world.getSceneObject('duck');
+    const model = this.world.getSceneObject(MODELS[this.modelIndex].id);
     if (!workpiece || !model) return;
     if (!this.fitModelInBlock(workpiece, model)) return; // modèle pas encore chargé : on réessaiera
 
@@ -430,17 +451,24 @@ export class WorkpieceSystem extends createSystem({
     meshes.forEach((mesh) => (mesh.material = probe));
     workpiece.updateWorldMatrix(true, true);
 
-    // Direction du rayon, exprimée dans le repère de la pièce (un seul rayon suffit :
-    // testé hors casque, trois directions donnaient exactement le même verdict sur le canard)
-    const direction = new Vector3(1, 0, 0).transformDirection(workpiece.matrixWorld);
+    // Directions des rayons, dans le repère de la pièce. Surface fermée (canard, poisson) : un rayon suffit
+    // (vérifié hors casque). Surface ouverte (avocat, Suzanne) : vote à la majorité sur trois rayons.
+    const axes = MODELS[this.modelIndex].closed
+      ? [new Vector3(1, 0, 0)]
+      : [new Vector3(1, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 0, 1)];
+    const directions = axes.map((axis) => axis.transformDirection(workpiece.matrixWorld));
     const raycaster = new Raycaster();
     const local = new Vector3();
     const world = new Vector3();
 
     /** Un point est dans la figurine si un rayon qui en part traverse sa surface un nombre impair de fois. */
     const isInside = (point: Vector3): boolean => {
-      raycaster.set(point, direction);
-      return raycaster.intersectObject(model, true).length % 2 === 1;
+      let votes = 0;
+      for (const direction of directions) {
+        raycaster.set(point, direction);
+        if (raycaster.intersectObject(model, true).length % 2 === 1) votes += 1;
+      }
+      return votes * 2 > directions.length;
     };
 
     const group = new Group();
@@ -516,6 +544,7 @@ export class WorkpieceSystem extends createSystem({
     const entity = this.world.createTransformEntity(copy, { parent });
     entity.addComponent(DepthOccludable, { mode: OcclusionShadersMode.HardOcclusion });
     this.revealCopy = copy;
+    this.revealEntity = entity;
     this.syncRevealCopy();
   }
 
@@ -605,6 +634,7 @@ export class WorkpieceSystem extends createSystem({
     bind('d-plus', () => this.changeSize('z', SIZE_STEP));
     bind('o-minus', () => this.changeOpacity(-OPACITY_STEP));
     bind('o-plus', () => this.changeOpacity(OPACITY_STEP));
+    bind('m-next', () => this.requestNextModel());
     bind('t-toggle', () => {
       this.trackingEnabled = !this.trackingEnabled;
       this.updateSettingsLabels();
@@ -621,18 +651,62 @@ export class WorkpieceSystem extends createSystem({
     const workpiece = this.workpiece;
     if (this.blockFaces) workpiece.remove(this.blockFaces);
     if (this.blockEdges) workpiece.remove(this.blockEdges);
-    if (this.maquette) workpiece.remove(this.maquette);
-    if (this.removalGroup) workpiece.remove(this.removalGroup);
+    this.fitModelInBlock(workpiece, this.model);
+    this.blockFaces = this.createBlock(workpiece);
+    this.rebuildDerived();
+  }
+
+  /** Reconstruit tout ce qui dépend de la figurine : maquette, couches rouges, copie « révélation », affichage. */
+  private rebuildDerived(): void {
+    if (!this.workpiece || !this.model) return;
+    if (this.maquette) this.workpiece.remove(this.maquette);
+    if (this.removalGroup) this.workpiece.remove(this.removalGroup);
     this.removalGroup = undefined;
     this.removalLayers = [];
+    this.revealCopy?.removeFromParent();
+    this.revealEntity?.destroy();
+    this.revealCopy = undefined;
+    this.revealEntity = undefined;
 
-    this.fitModelInBlock(workpiece, this.model);
-    this.syncRevealCopy();
-    this.blockFaces = this.createBlock(workpiece);
-    this.maquette = this.createMaquette(workpiece, this.model);
-    if (DISPLAY_MODES[this.modeIndex] === 'removal') this.buildRemovalLayers();
+    this.maquette = this.createMaquette(this.workpiece, this.model);
+    this.applyDisplayMode(DISPLAY_MODES[this.modeIndex]); // recrée couches / copie si le mode en a besoin
     this.updateSettingsLabels();
-    this.refreshVisibility();
+  }
+
+  // ---------- Choix du modèle ----------
+
+  /** Les modèles non choisis restent cachés (ils sont tous chargés dans la scène). */
+  private hideInactiveModels(): void {
+    MODELS.forEach(({ id }, index) => {
+      if (index === this.modelIndex) return;
+      const object = this.world.getSceneObject(id);
+      if (object) object.visible = false;
+    });
+  }
+
+  /** Bouton « changer » : demande le modèle suivant (seulement déverrouillé). */
+  private requestNextModel(): void {
+    if (this.locked) return;
+    this.pendingModel = (this.modelIndex + 1) % MODELS.length;
+  }
+
+  /** Bascule vers le modèle demandé dès qu'il est chargé. */
+  private trySwitchModel(): void {
+    const index = this.pendingModel;
+    if (index === undefined || !this.workpiece || !this.model) return;
+    const next = this.world.getSceneObject(MODELS[index].id);
+    if (!next || !this.fitModelInBlock(this.workpiece, next)) return; // pas encore chargé : on réessaiera
+
+    // L'ancien modèle retrouve ses matériaux d'origine et disparaît
+    this.originalMaterials.forEach((original, mesh) => (mesh.material = original));
+    this.model.visible = false;
+    this.originalMaterials.clear();
+
+    this.model = next;
+    this.modelIndex = index;
+    this.pendingModel = undefined;
+    this.rememberMaterials(next);
+    this.rebuildDerived();
   }
 
   /** Change l'opacité du canard en mode transparent. */
@@ -651,6 +725,7 @@ export class WorkpieceSystem extends createSystem({
     set('d-value', cm(this.blockSize.z));
     set('o-value', `${Math.round(this.transparentMaterial.opacity * 100)} %`);
     set('t-value', this.trackingEnabled ? 'oui' : 'non');
+    set('m-value', MODELS[this.modelIndex].label);
   }
 
   // ---------- Objets d'aide ----------
