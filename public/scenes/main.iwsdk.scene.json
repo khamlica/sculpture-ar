@@ -84,6 +84,30 @@
       }
     },
     {
+      "id": "settings-panel",
+      "name": "Settings Panel",
+      "content": {
+        "type": "asset",
+        "asset": "settings-panel"
+      },
+      "transform": {
+        "position": [
+          0.5,
+          1.3,
+          -0.9
+        ],
+        "rotationDeg": [
+          -10,
+          -29,
+          0
+        ],
+        "scale": 0.11
+      },
+      "components": {
+        "RayInteractable": {}
+      }
+    },
+    {
       "id": "key-light",
       "name": "Key Light",
       "transform": {

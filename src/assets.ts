@@ -62,6 +62,7 @@ export default defineAssets({
     name: 'Duck',
   },
   'welcome-panel': uikitml('welcome.uikitml', 'Welcome Panel'),
+  'settings-panel': uikitml('settings.uikitml', 'Settings Panel'),
   'label-grab': uikitml('label-grab.uikitml', 'Grab Label'),
   'label-select': uikitml('label-select.uikitml', 'Select Label'),
   'label-spin': uikitml('label-spin.uikitml', 'Spin Label'),

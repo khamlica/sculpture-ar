@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-import { World } from '@iwsdk/core';
+import { DepthSensingSystem, World } from '@iwsdk/core';
 import projectOptions from 'virtual:iwsdk-project';
 import { PanelSystem } from './panel.js';
 import { WorkpieceSystem } from './workpiece.js';
@@ -15,5 +15,6 @@ World.create(
   projectOptions,
 ).then((world) => {
   world.registerSystem(PanelSystem);
+  world.registerSystem(DepthSensingSystem); // profondeur du casque (mode « révélation »)
   world.registerSystem(WorkpieceSystem);
 });

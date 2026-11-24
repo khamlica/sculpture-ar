@@ -2,11 +2,13 @@ import {
   Box3,
   BoxGeometry,
   createSystem,
+  DepthOccludable,
   DoubleSide,
   EdgesGeometry,
   Entity,
   EnvironmentRaycastTarget,
   Group,
+  Hovered,
   InstancedMesh,
   LineBasicMaterial,
   LineSegments,
@@ -16,6 +18,8 @@ import {
   MeshBasicMaterial,
   MeshStandardMaterial,
   Object3D,
+  OcclusionShadersMode,
+  RayInteractable,
   Raycaster,
   RaycastSpace,
   RingGeometry,
@@ -26,7 +30,7 @@ import {
 
 // ============ Réglages à adapter avant le TP ============
 
-/** Dimensions du bloc réel (cube en carton), en mètres : largeur, hauteur, profondeur. À MESURER. */
+/** Dimensions de départ du bloc réel, en mètres : largeur, hauteur, profondeur. Réglables ensuite dans le panneau. */
 const BLOCK_SIZE = new Vector3(0.07, 0.07, 0.07);
 /** Marge entre la figurine et les parois du bloc, en mètres. */
 const MARGIN = 0.005;
@@ -39,6 +43,9 @@ const HEIGHT_SPEED = 0.02;
 /** Maquette tournante : agrandissement par rapport à la figurine dans le bloc, et vitesse de rotation automatique. */
 const MAQUETTE_SCALE = 2;
 const MAQUETTE_SPEED = 0.3;
+/** Pas des boutons du panneau de réglages : taille du bloc (m) et opacité du mode transparent. */
+const SIZE_STEP = 0.002;
+const OPACITY_STEP = 0.1;
 /** En dessous de cette valeur, le joystick est considéré au repos. */
 const STICK_DEADZONE = 0.2;
 /** Faux « cube réel » pour s'entraîner dans l'émulateur : affiché seulement sur le PC (localhost). */
@@ -46,8 +53,8 @@ const PRACTICE_CUBE = location.hostname === 'localhost';
 
 // ========================================================
 
-type DisplayMode = 'solid' | 'transparent' | 'wireframe' | 'removal';
-const DISPLAY_MODES: DisplayMode[] = ['solid', 'transparent', 'wireframe', 'removal'];
+type DisplayMode = 'solid' | 'transparent' | 'wireframe' | 'removal' | 'reveal';
+const DISPLAY_MODES: DisplayMode[] = ['solid', 'transparent', 'wireframe', 'removal', 'reveal'];
 
 type Side = 'left' | 'right';
 const SIDES: Side[] = ['right', 'left'];
@@ -62,6 +69,7 @@ const MODE_LABELS: Record<DisplayMode, string> = {
   transparent: 'transparent',
   wireframe: 'fil de fer',
   removal: 'matiere a retirer',
+  reveal: 'revelation (profondeur)',
 };
 
 /** Ce que renvoie this.input.xr.gamepads.right ou .left (une manette, ou une main). */
@@ -77,12 +85,18 @@ type Gamepad = NonNullable<WorkpieceSystem['input']['xr']['gamepads']['right']>;
  *   joystick gauche/droite  = tourner le bloc
  *   joystick haut/bas       = monter / descendre le bloc (déverrouillé)
  *                             changer de couche (verrouillé, mode « matière à retirer »)
- *   A ou X = changer l'affichage : plein / transparent / fil de fer / matière à retirer
+ *   A ou X = changer l'affichage : plein / transparent / fil de fer / matière à retirer / révélation
  *   B ou Y = verrouiller / déverrouiller
  *   poignée = afficher / cacher la maquette tournante (verrouillé)
  *             joystick gauche/droite la fait tourner à la main, sinon elle tourne seule
  */
-export class WorkpieceSystem extends createSystem({}) {
+export class WorkpieceSystem extends createSystem({
+  // Panneaux actuellement visés par un rayon : on ne déplace pas le bloc quand on clique sur un bouton
+  hoveredPanels: { required: [RayInteractable, Hovered] },
+}) {
+  /** Dimensions actuelles du bloc (modifiables depuis le panneau de réglages). */
+  private blockSize = BLOCK_SIZE.clone();
+  private blockEdges: LineSegments | undefined;
   private workpiece: Object3D | undefined;
   private model: Object3D | undefined;
   private blockFaces: Mesh | undefined;
@@ -111,6 +125,14 @@ export class WorkpieceSystem extends createSystem({}) {
   /** Maquette : une copie agrandie de la figurine, posée à côté du bloc, qu'on peut faire tourner librement. */
   private maquette: Group | undefined;
   private showMaquette = false;
+
+  /**
+   * Mode « révélation » (expérimental) : le canard est gris, et une copie en couleur posée exactement dessus
+   * est masquée par les surfaces réelles mesurées par le capteur de profondeur du casque.
+   * Là où il reste de la pâte devant le canard : gris. Là où la pâte a été enlevée : couleur.
+   */
+  private revealCopy: Object3D | undefined;
+  private greyMaterial = new MeshStandardMaterial({ color: 0x8a8a8a });
 
   /** Ligne d'état du panneau d'aide. */
   private statusText: UIKit.Text | undefined;
@@ -180,6 +202,7 @@ export class WorkpieceSystem extends createSystem({}) {
     this.statusText =
       this.world.getSceneObject<UIKitMLAsset>('welcome-panel')?.getElementById<UIKit.Text>('status') ??
       undefined;
+    this.bindSettings();
     this.refreshVisibility();
   }
 
@@ -188,13 +211,21 @@ export class WorkpieceSystem extends createSystem({}) {
     model.position.set(0, 0, 0);
     model.rotation.set(0, 0, 0);
     model.scale.setScalar(1);
-    workpiece.updateWorldMatrix(true, true);
 
+    // On mesure la figurine dans le repère de la pièce : on neutralise un instant sa position et sa rotation
+    const savedPosition = workpiece.position.clone();
+    const savedQuaternion = workpiece.quaternion.clone();
+    workpiece.position.set(0, 0, 0);
+    workpiece.quaternion.identity();
+    workpiece.updateWorldMatrix(true, true);
     const bounds = new Box3().setFromObject(model);
+    const origin = workpiece.getWorldPosition(new Vector3());
+    workpiece.position.copy(savedPosition);
+    workpiece.quaternion.copy(savedQuaternion);
+    workpiece.updateWorldMatrix(true, true);
     if (bounds.isEmpty()) return false;
 
     // Boîte englobante de la figurine, exprimée par rapport à l'origine de la pièce de travail
-    const origin = workpiece.getWorldPosition(new Vector3());
     bounds.min.sub(origin);
     bounds.max.sub(origin);
     const size = bounds.getSize(new Vector3());
@@ -202,9 +233,9 @@ export class WorkpieceSystem extends createSystem({}) {
 
     // Le plus grand facteur qui laisse la marge sur les côtés et en haut
     const scale = Math.min(
-      (BLOCK_SIZE.x - 2 * MARGIN) / size.x,
-      (BLOCK_SIZE.y - MARGIN) / size.y,
-      (BLOCK_SIZE.z - 2 * MARGIN) / size.z,
+      (this.blockSize.x - 2 * MARGIN) / size.x,
+      (this.blockSize.y - MARGIN) / size.y,
+      (this.blockSize.z - 2 * MARGIN) / size.z,
     );
     model.scale.setScalar(scale);
     model.position.set(-center.x * scale, -bounds.min.y * scale, -center.z * scale);
@@ -213,7 +244,7 @@ export class WorkpieceSystem extends createSystem({}) {
 
   /** Le bloc virtuel : faces translucides + arêtes. L'origine est au centre de la face du dessous. */
   private createBlock(workpiece: Object3D): Mesh {
-    const geometry = new BoxGeometry(BLOCK_SIZE.x, BLOCK_SIZE.y, BLOCK_SIZE.z);
+    const geometry = new BoxGeometry(this.blockSize.x, this.blockSize.y, this.blockSize.z);
     const faces = new Mesh(
       geometry,
       new MeshBasicMaterial({ color: 0xd9a066, transparent: true, opacity: 0.25, depthWrite: false }),
@@ -222,9 +253,10 @@ export class WorkpieceSystem extends createSystem({}) {
       new EdgesGeometry(geometry),
       new LineBasicMaterial({ color: 0xd9a066 }),
     );
-    faces.position.y = BLOCK_SIZE.y / 2;
-    edges.position.y = BLOCK_SIZE.y / 2;
+    faces.position.y = this.blockSize.y / 2;
+    edges.position.y = this.blockSize.y / 2;
     workpiece.add(faces, edges);
+    this.blockEdges = edges;
     return faces;
   }
 
@@ -247,6 +279,7 @@ export class WorkpieceSystem extends createSystem({}) {
   /** Gâchette maintenue en visant une surface : le bloc glisse jusqu'au viseur de cette manette. */
   private handleMove(pads: { side: Side; pad: Gamepad }[]): void {
     if (!this.workpiece) return;
+    if (this.queries.hoveredPanels.entities.size > 0) return; // on vise un panneau : c'est un clic de bouton
     for (const { side, pad } of pads) {
       const reticle = this.reticles[side];
       if (!pad.getSelecting() || !reticle?.object3D) continue;
@@ -323,6 +356,7 @@ export class WorkpieceSystem extends createSystem({}) {
     if (this.removalGroup) this.removalGroup.visible = this.locked && removal;
     this.removalLayers.forEach((layer, index) => (layer.visible = index === this.currentLayer));
     if (this.maquette) this.maquette.visible = this.locked && this.showMaquette;
+    if (this.revealCopy) this.revealCopy.visible = this.locked && DISPLAY_MODES[this.modeIndex] === 'reveal';
     this.updateStatus();
   }
 
@@ -344,9 +378,11 @@ export class WorkpieceSystem extends createSystem({}) {
 
   private applyDisplayMode(mode: DisplayMode): void {
     if (mode === 'removal' && !this.removalGroup) this.buildRemovalLayers();
+    if (mode === 'reveal' && !this.revealCopy) this.createRevealCopy();
     for (const [mesh, original] of this.originalMaterials) {
       if (mode === 'solid') mesh.material = original;
       else if (mode === 'transparent') mesh.material = this.transparentMaterial;
+      else if (mode === 'reveal') mesh.material = this.greyMaterial;
       else mesh.material = this.wireframeMaterial; // fil de fer, et en contexte du mode « matière à retirer »
     }
     this.refreshVisibility();
@@ -363,10 +399,10 @@ export class WorkpieceSystem extends createSystem({}) {
     const workpiece = this.workpiece;
     const model = this.model;
 
-    const nx = Math.max(1, Math.round(BLOCK_SIZE.x / VOXEL_SIZE));
-    const ny = Math.max(1, Math.round(BLOCK_SIZE.y / VOXEL_SIZE));
-    const nz = Math.max(1, Math.round(BLOCK_SIZE.z / VOXEL_SIZE));
-    const cell = new Vector3(BLOCK_SIZE.x / nx, BLOCK_SIZE.y / ny, BLOCK_SIZE.z / nz);
+    const nx = Math.max(1, Math.round(this.blockSize.x / VOXEL_SIZE));
+    const ny = Math.max(1, Math.round(this.blockSize.y / VOXEL_SIZE));
+    const nz = Math.max(1, Math.round(this.blockSize.z / VOXEL_SIZE));
+    const cell = new Vector3(this.blockSize.x / nx, this.blockSize.y / ny, this.blockSize.z / nz);
 
     // Pour compter les traversées de surface, le rayon doit « voir » les deux faces des triangles
     const meshes = [...this.originalMaterials.keys()];
@@ -403,9 +439,9 @@ export class WorkpieceSystem extends createSystem({}) {
       for (let i = 0; i < nx; i++) {
         for (let k = 0; k < nz; k++) {
           local.set(
-            -BLOCK_SIZE.x / 2 + (i + 0.5) * cell.x,
+            -this.blockSize.x / 2 + (i + 0.5) * cell.x,
             (j + 0.5) * cell.y,
-            -BLOCK_SIZE.z / 2 + (k + 0.5) * cell.z,
+            -this.blockSize.z / 2 + (k + 0.5) * cell.z,
           );
           world.copy(local);
           workpiece.localToWorld(world);
@@ -427,6 +463,110 @@ export class WorkpieceSystem extends createSystem({}) {
     this.currentLayer = ny - 1; // on commence par la couche du dessus
   }
 
+  // ---------- Mode « révélation » (profondeur) ----------
+
+  /** Copie en couleur du canard, posée exactement sur lui, masquée par le réel grâce à la profondeur du casque. */
+  private createRevealCopy(): void {
+    const parent = this.world.getSceneEntity('workpiece');
+    if (!this.model || !parent) return;
+
+    // Copie avec les vraies couleurs
+    const meshes = [...this.originalMaterials.keys()];
+    const current = meshes.map((mesh) => mesh.material);
+    this.originalMaterials.forEach((original, mesh) => (mesh.material = original));
+    const copy = this.model.clone(true);
+    meshes.forEach((mesh, i) => (mesh.material = current[i]));
+    copy.visible = true;
+
+    // Matériaux clonés (le système de profondeur modifie leurs shaders) et légèrement « avancés »
+    // pour passer devant le canard gris, qui occupe exactement la même place
+    const prepare = (material: Material): Material => {
+      const clone = material.clone();
+      clone.polygonOffset = true;
+      clone.polygonOffsetFactor = -1;
+      clone.polygonOffsetUnits = -4;
+      return clone;
+    };
+    copy.traverse((object) => {
+      if (!(object instanceof Mesh)) return;
+      object.material = Array.isArray(object.material) ? object.material.map(prepare) : prepare(object.material);
+      object.renderOrder = 1;
+    });
+
+    // En faire une entité, enfant de la pièce de travail, masquée par les surfaces réelles
+    const entity = this.world.createTransformEntity(copy, { parent });
+    entity.addComponent(DepthOccludable, { mode: OcclusionShadersMode.HardOcclusion });
+    this.revealCopy = copy;
+    this.syncRevealCopy();
+  }
+
+  /** Garde la copie exactement sur le canard (après un changement de taille du bloc). */
+  private syncRevealCopy(): void {
+    if (!this.revealCopy || !this.model) return;
+    this.revealCopy.position.copy(this.model.position);
+    this.revealCopy.quaternion.copy(this.model.quaternion);
+    this.revealCopy.scale.copy(this.model.scale);
+  }
+
+  // ---------- Panneau de réglages ----------
+
+  /** Relie les boutons du panneau de réglages aux actions. */
+  private bindSettings(): void {
+    const panel = this.world.getSceneObject<UIKitMLAsset>('settings-panel');
+    if (!panel) return;
+    const bind = (id: string, action: () => void) => {
+      panel.getElementById(id)?.addEventListener('click', action);
+    };
+    bind('w-minus', () => this.changeSize('x', -SIZE_STEP));
+    bind('w-plus', () => this.changeSize('x', SIZE_STEP));
+    bind('h-minus', () => this.changeSize('y', -SIZE_STEP));
+    bind('h-plus', () => this.changeSize('y', SIZE_STEP));
+    bind('d-minus', () => this.changeSize('z', -SIZE_STEP));
+    bind('d-plus', () => this.changeSize('z', SIZE_STEP));
+    bind('o-minus', () => this.changeOpacity(-OPACITY_STEP));
+    bind('o-plus', () => this.changeOpacity(OPACITY_STEP));
+    this.updateSettingsLabels();
+  }
+
+  /** Change une dimension du bloc (seulement déverrouillé), puis reconstruit bloc, figurine, maquette et couches. */
+  private changeSize(axis: 'x' | 'y' | 'z', step: number): void {
+    if (this.locked || !this.workpiece || !this.model) return;
+    this.blockSize[axis] = Math.min(0.5, Math.max(0.02, this.blockSize[axis] + step));
+
+    const workpiece = this.workpiece;
+    if (this.blockFaces) workpiece.remove(this.blockFaces);
+    if (this.blockEdges) workpiece.remove(this.blockEdges);
+    if (this.maquette) workpiece.remove(this.maquette);
+    if (this.removalGroup) workpiece.remove(this.removalGroup);
+    this.removalGroup = undefined;
+    this.removalLayers = [];
+
+    this.fitModelInBlock(workpiece, this.model);
+    this.syncRevealCopy();
+    this.blockFaces = this.createBlock(workpiece);
+    this.maquette = this.createMaquette(workpiece, this.model);
+    if (DISPLAY_MODES[this.modeIndex] === 'removal') this.buildRemovalLayers();
+    this.updateSettingsLabels();
+    this.refreshVisibility();
+  }
+
+  /** Change l'opacité du canard en mode transparent. */
+  private changeOpacity(step: number): void {
+    this.transparentMaterial.opacity = Math.min(1, Math.max(0.1, this.transparentMaterial.opacity + step));
+    this.updateSettingsLabels();
+  }
+
+  /** Affiche les valeurs actuelles dans le panneau de réglages. */
+  private updateSettingsLabels(): void {
+    const panel = this.world.getSceneObject<UIKitMLAsset>('settings-panel');
+    const set = (id: string, text: string) => panel?.getElementById<UIKit.Text>(id)?.setProperties({ text });
+    const cm = (meters: number) => `${(meters * 100).toFixed(1)} cm`;
+    set('w-value', cm(this.blockSize.x));
+    set('h-value', cm(this.blockSize.y));
+    set('d-value', cm(this.blockSize.z));
+    set('o-value', `${Math.round(this.transparentMaterial.opacity * 100)} %`);
+  }
+
   // ---------- Objets d'aide ----------
 
   /** Copie agrandie de la figurine (avec ses vraies couleurs), posée sur la table à droite du bloc. */
@@ -434,11 +574,14 @@ export class WorkpieceSystem extends createSystem({}) {
     const pivot = new Group();
     // Créée maintenant : elle garde les matériaux d'origine. Sa position (déjà centrée
     // horizontalement par fitModelInBlock) la fait tourner sur place autour du pivot.
+    const current = [...this.originalMaterials].map(([mesh]) => mesh.material);
+    this.originalMaterials.forEach((original, mesh) => (mesh.material = original));
     const copy = model.clone(true);
+    [...this.originalMaterials.keys()].forEach((mesh, i) => (mesh.material = current[i]));
     copy.visible = true;
     pivot.add(copy);
     pivot.scale.setScalar(MAQUETTE_SCALE);
-    pivot.position.set(BLOCK_SIZE.x / 2 + BLOCK_SIZE.x * MAQUETTE_SCALE * 0.5 + 0.04, 0, 0);
+    pivot.position.set(this.blockSize.x / 2 + this.blockSize.x * MAQUETTE_SCALE * 0.5 + 0.04, 0, 0);
     workpiece.add(pivot);
     return pivot;
   }
